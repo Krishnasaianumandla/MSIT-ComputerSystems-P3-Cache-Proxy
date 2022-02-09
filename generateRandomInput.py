@@ -6,9 +6,9 @@ result = open("input.txt", "w")
 
 
 def getRange():
-    x = random.randint(0, 20000)
-    y = random.randint(1, 20000)
-    z = random.randint(1, 20000)
+    x = random.randint(0, 1000)
+    y = random.randint(1, 1000)
+    z = random.randint(1, 1000)
     output = f"RANGE {x} {y} {z}\n"
     return output
 
@@ -26,7 +26,7 @@ result.write(str(data) + "\n")
 cache_size = []
 
 for i in range(data):
-    size = random.randint(2, pow(2, 20))
+    size = random.randint(2, 100)
     cache_size.append(size)
 data = str(cache_size).replace("[", "").replace("]", "").replace(", ", " ")
 result.write(str(data) + "\n")
