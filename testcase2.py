@@ -1,6 +1,7 @@
 import re
 import socket
 import threading
+import time
 from collections import OrderedDict
 
 
@@ -14,10 +15,8 @@ class HTTPServer:
         self.server_address = (self.ip_address, self.port)
         self.server.bind(self.server_address)
 
-        # create cache
-        self.cache = OrderedDict()
-
         self.start()
+        self.cache = OrderedDict()
 
     pass
 
@@ -37,19 +36,31 @@ class HTTPServer:
         http_request_decoded = http_request.decode('utf-8')
         request_method, path, version = self.getRequestLine(http_request_decoded)
 
-        print(http_request_decoded)
-
-        # check if client has requested https request
         if "https" in path:
-            http_response = "HTTP/1.1 404 NOT FOUND\n\n"
+            http_response = "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 1024\nConnection: Closed\n\n"
+            http_response += "<h1>You requested HTTPS </h1>"
+            http_response += "<h1>Currently this request is not available </h1>"
             http_response = http_response.encode('utf-8')
         else:
-            # check if path is in cache
             http_response = self.checkCache(path, http_request)
 
         connection.send(http_response)
         connection.close()
         pass
+
+    def checkCache(self, path, http_request):
+        if path not in self.cache:
+            http_response = self.getWebsiteData(path, http_request)
+            if len(http_response) < 10000:
+                self.cache[path] = http_response
+                self.cache.move_to_end(path)
+                if len(self.cache) > int(5):
+                    self.cache.popitem(last=False)
+        else:
+            http_response = self.cache[path]
+            self.cache.move_to_end(path)
+
+        return http_response
 
     @staticmethod
     def getRequestLine(http_request):
@@ -70,20 +81,8 @@ class HTTPServer:
         domain_address = socket.gethostbyname(path)
         return domain_address
 
-    def checkCache(self, path, http_request):
-        if path not in self.cache:
-            http_request = self.getHttpResponse(path, http_request)
-            if len(http_request) < 10000:
-                self.cache[path] = http_request
-                self.cache.move_to_end(path)
-                if len(self.cache) > 5:
-                    self.cache.popitem(last=False)
-            return http_request
-        else:
-            self.cache.move_to_end(path)
-            return self.cache[path]
+    def getWebsiteData(self, path, http_request):
 
-    def getHttpResponse(self, path, http_request):
         domain_name = path.replace("http://", "").split("/")[0]
         domain_port = 80
         domain_address = (domain_name, domain_port)
@@ -97,7 +96,7 @@ class HTTPServer:
 
         http_response = domain.recv(10000000)
         response = http_response.decode()
-        # get total response size
+        # get total responce size
         required_size = self.getSize(response)
 
         while True:
