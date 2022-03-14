@@ -1,201 +1,150 @@
-"""
-    Disclaimer
-    tiny httpd is a web server program for instructional purposes only
-    It is not intended to be used as a production quality web server
-    as it does not fully in compliance with the
-    HTTP RFC https://tools.ietf.org/html/rfc2616
-
-"""
-import mimetypes
-import os
-import signal
+import re
 import socket
-import sys
+import threading
+from collections import OrderedDict
 
 
 class HTTPServer:
-    def __init__(self, ip, port):
-        self.__IP = ip
-        self.__port = port
-        self.__project_root_directory = os.getcwd()
-        self.__directory_browsing_mode = True
+    def __init__(self, ip_address, port):
+        self.ip_address = ip_address
+        self.port = port
 
         # Create server
         self.server = socket.socket()
-        self.server_address = (self.__IP, self.__port)
+        self.server_address = (self.ip_address, self.port)
         self.server.bind(self.server_address)
 
-        # Start Server
+        # create cache
+        self.cache = OrderedDict()
+
+        # Start server
         self.start()
 
-    # To start server
+    pass
+
     def start(self):
-        self.server.listen(1)
-        print("Server status: online")
+        self.server.listen()
         while True:
+            # Accept clients
             connection, client_address = self.server.accept()
-            self.handleClient(connection)
+            thread = threading.Thread(target=self.handleClient, args=(connection,))
+            thread.start()
+            thread.join()
+
         pass
 
-    # Handling client
     def handleClient(self, connection):
+        # receive client Request
+        http_request = connection.recv(1024)
+        http_request_decoded = http_request.decode('utf-8')
 
-        # receive HTTP Request
-        http_request = connection.recv(1024).decode('utf-8')
+        # Extract Start line details
+        request_method, path, version = self.getRequestLine(http_request_decoded)
 
-        # Process HTTP Request
-        request_method, path, version = self.getRequestLine(http_request)
+        # check if client has requested https request
+        if "https" in path:
+            http_response = "HTTP/1.1 404 NOT FOUND\n\n"
+            http_response = http_response.encode('utf-8')
+        else:
+            # check if path is in cache
+            http_response = self.checkCache(path, http_request)
 
-        # Based on method perform operation
-        http_response = self.process_client_request(request_method, path)
-
+        # Send HTTP_Response and close the connection
         connection.send(http_response)
         connection.close()
         pass
 
-    def process_client_request(self, request_method, path):
-        if request_method == "GET":
-            if path == "/":
-                return self.homePage()
-            elif os.path.isdir(path):
-                return self.sendDirResponse(path)
-            elif os.path.isfile(path):
-                return self.sendFileResponse(path)
-            else:
-                return self.sendErrorStatusCode()
-
-    # Extract request line from HTTP Request
-    def getRequestLine(self, http_request):
+    @staticmethod
+    def getRequestLine(http_request):
         # split lines into list
         lines = http_request.splitlines()
 
         # Extract request line details
-        if len(lines) == 0:
-            return
         request_line = lines[0].split(" ")
         request_method = request_line[0]
         path = request_line[1]
-        if request_line[1] != "/":
-            path = self.__project_root_directory + request_line[1]
         version = request_line[2]
         return request_method, path, version
+        pass
 
-    # Send list of all files in that particular directory
-    def sendDirResponse(self, path):
-        # Generate HTTP Response
-        http_response = "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 1024\nConnection: Closed\n\n"
+    def checkCache(self, path, http_request):
+        if path not in self.cache:
+            # if path not in cache
+            # create HTTP Response
+            http_request = self.getHttpResponse(path, http_request)
 
-        # get all files in that directory
-        files = os.listdir(path)
-        for file in files:
-            file_path = os.path.join(path, file)
-            text = file_path.replace(self.__project_root_directory, "")
-            http_response += f"<a href = '{text}'>{file}</a>\n<br>\n"
+            # check the size of the response. if less than 10000 bytes add to cache
+            if len(http_request) < 10000:
+                self.cache[path] = http_request
+                self.cache.move_to_end(path)
 
-        # Send the generated HTTP Response
-        return http_response.encode('utf-8')
+                # check the size of cache. if the size exceeds then delete the less recently used
+                if len(self.cache) > 5:
+                    self.cache.popitem(last=False)
 
-    def sendFileResponse(self, path):
+            return http_request
 
-        if "bin" in path:
-            http_response = self.createDynamic(path)
         else:
-            http_response = self.createStatic(path)
+            # if path in cache get HTTP Response
+            self.cache.move_to_end(path)
+            return self.cache[path]
+
+    def getHttpResponse(self, path, http_request):
+        # get domain name with and without http://
+        domain_name, neglect_text = self.getDomainAddress_path(path)
+        domain_port = 80
+
+        # connect to domain
+        domain_address = (domain_name, domain_port)
+        domain = socket.socket()
+        domain.connect(domain_address)
+        print(f"Connected to {domain_name} through port {domain_port}")
+
+        # create HTTP_Request without domain name in the startline
+        request_text = http_request.decode()
+        request = request_text.replace(neglect_text, "")
+        request_bytes = request.encode()
+
+        # send the new HTTP_Request
+        domain.send(request_bytes)
+        print("Http request has been sent to the domain")
+
+        # receive HTTP_Response form the domain
+        http_response = domain.recv(10000000)
+        response = http_response.decode()
+
+        # extract get content-length from the response
+        required_size = self.getSize(response)
+
+        # check if all the content has been received
+        while True:
+            if len(http_response) > required_size - 100:
+                break
+            else:
+                http_response += domain.recv(10000000)
+        print(f"received {len(http_response)} size of bytes")
         return http_response
 
     @staticmethod
-    def sendErrorStatusCode():
-        http_response = "HTTP/1.1 404 NOT FOUND\n\n"
-        return http_response.encode('utf-8')
+    def getDomainAddress_path(path):
+        # extract domain name with and without http
+        domain_address = path.replace("http://", "").split("/")[0]
+        text = f"http://{domain_address}"
+        return domain_address, text
 
     @staticmethod
-    def homePage():
-        http_response = "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 1024\nConnection: Closed\n\n"
-        http_response += "<a href = '/www'>www</a><br>"
-        http_response += "<a href = '/bin'>bin</a>"
-        return http_response.encode('utf-8')
-
-    def createDynamic(self, path):
-        import sys
-        stdin = sys.stdin.fileno()  # usually 0
-        stdout = sys.stdout.fileno()  # usually 1
-
-        parent_stdin, child_stdout = os.pipe()
-        child_stdin, parent_stdout = os.pipe()
-        pid = os.fork()
-        sys.stdout.flush()
-        if pid > 0:
-            # parent process
-            os.close(child_stdout)
-            os.close(child_stdin)
-            os.dup2(parent_stdin, stdin)
-            os.dup2(parent_stdout, stdout)
-            return self.dynamicServer()
-
-        elif pid == 0:
-            # child process
-            os.close(parent_stdin)
-            os.close(parent_stdout)
-            os.dup2(child_stdin, stdin)
-            os.dup2(child_stdout, stdout)
-            self.dynamicClient(path)
-        pass
-
-    @staticmethod
-    def createStatic(path):
-        # Read file
-        file = open(path, 'rb')
-        requested_file = file.read()
-        file.close()
-
-        # Generate http response header
-        file_name = os.path.basename(path)
-        content_type = mimetypes.MimeTypes().guess_type(file_name)[0]
-        content_length = len(requested_file)
-        # Generate http response and convert it to binary
-        http_response = f"HTTP/1.1 200 OK\nContent-Type: {content_type}\nContent-Length: {content_length}\nConnection: Closed\n\n"
-        http_response = http_response.encode('utf-8')
-
-        # Combine http header and file content
-        response_bytes = http_response + requested_file
-
-        return response_bytes
-
-    @staticmethod
-    def dynamicServer():
-        data = ""
-        for line in sys.stdin.readlines():
-            data += line
-
-        content_type = "text/plain"
-        content_length = len(data)
-        http_response = f"HTTP/1.1 200 OK\nContent-Type: {content_type}\nContent-Length: {content_length}\nConnection: Closed\n\n"
-        http_response += data
-        return http_response.encode('utf-8')
-
-    @staticmethod
-    def dynamicClient(path):
-        # Extract file details
-        file_name = os.path.basename(path)
-        content_type = mimetypes.MimeTypes().guess_type(file_name)[0]
-
-        # check type of file and execute the method
-        if content_type is None:
-            exec("os.system(file_name)")
-        else:
-            exec(open(path).read())
-
-        # Kill the child process once execution is done
-        pid = os.getpid()
-        os.kill(pid, signal.SIGTERM)
-
-        pass
+    def getSize(response):
+        # extract content length form the Http Response
+        lines = response.splitlines()
+        response_length = 0
+        for line in lines:
+            if "Content-Length" in line:
+                response_length = int(re.findall("[0-9]+", line)[0])
+                break
+        return response_length
 
 
 def main():
-    # test harness checks for your web server on the localhost and on port 8888
-    # do not change the host and port
-    # you can change  the HTTPServer object if you are not following OOP
     HTTPServer('127.0.0.1', 8888)
 
 
